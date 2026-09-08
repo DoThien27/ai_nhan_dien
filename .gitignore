@@ -14,9 +14,11 @@ __pycache__/
 *.so
 
 # Datasets and models
-dataset/
-models/
 *.h5
+*.keras
+*.pt
+*.pth
+*.weights
 *.keras
 *.pt
 *.pth
