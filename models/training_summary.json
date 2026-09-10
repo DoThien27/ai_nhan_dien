@@ -1,0 +1,34 @@
+{
+    "project_name": "AI Nhận Diện Trái Cây",
+    "trained_at": "2026-09-08 21:31:45",
+    "classes_learned": [
+        "apple",
+        "banana",
+        "grape",
+        "mango",
+        "orange"
+    ],
+    "total_classes": 5,
+    "dataset_info": {
+        "train_samples": 7277,
+        "validation_samples": 1822,
+        "input_shape": [
+            128,
+            128,
+            3
+        ]
+    },
+    "hyperparameters": {
+        "epochs_run": 30,
+        "batch_size": 32,
+        "optimizer": "Adam",
+        "learning_rate": 0.001
+    },
+    "final_metrics": {
+        "accuracy": 0.9927,
+        "val_accuracy": 0.9973,
+        "loss": 0.0216,
+        "val_loss": 0.0054
+    },
+    "model_path": "models/fruit_model.keras"
+}

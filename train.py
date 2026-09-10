@@ -11,6 +11,7 @@ Script này sẽ:
 
 import os
 import json
+import datetime
 import numpy as np
 import matplotlib.pyplot as plt
 from pathlib import Path
@@ -43,6 +44,11 @@ IMG_SIZE    = 128           # Kích thước ảnh (128x128 pixel)
 BATCH_SIZE  = 32            # Số ảnh mỗi batch
 EPOCHS      = 30            # Số vòng huấn luyện tối đa
 CONFIDENCE_THRESHOLD = 0.60 # Ngưỡng độ tin cậy tối thiểu
+LEARNING_RATE = 0.001       # Learning rate mặc định
+FINE_TUNE_LR = 0.0005       # Learning rate khi fine-tuning
+
+# Khai báo mảng chứa Callback từ GUI (nếu có)
+GUI_CALLBACKS = []
 
 
 def kiem_tra_dataset():
@@ -160,23 +166,15 @@ def tao_data_generators():
 
 def xay_dung_mo_hinh(so_class):
     """
-    Xây dựng mô hình CNN (Convolutional Neural Network).
-    
-    Kiến trúc:
-    - 3 khối Conv2D + MaxPooling để trích xuất đặc trưng ảnh
-    - Dropout để chống overfitting
-    - Dense layer để phân loại
-    
-    Args:
-        so_class: Số lượng loại quả cần phân loại
-    
-    Returns:
-        Mô hình Keras đã được compile
+    Xây dựng mô hình CNN (Convolutional Neural Network) từ đầu.
     """
     model = keras.Sequential([
+        # ===== Data Augmentation Tích Hợp Sẵn =====
+        layers.RandomFlip("horizontal_and_vertical", input_shape=(IMG_SIZE, IMG_SIZE, 3)),
+        layers.RandomContrast(0.2),
+        
         # ===== Khối 1: Phát hiện các đặc trưng cơ bản (cạnh, góc) =====
-        layers.Conv2D(32, (3, 3), activation="relu", padding="same",
-                      input_shape=(IMG_SIZE, IMG_SIZE, 3)),
+        layers.Conv2D(32, (3, 3), activation="relu", padding="same"),
         layers.BatchNormalization(),    # Chuẩn hóa batch để huấn luyện ổn định hơn
         layers.Conv2D(32, (3, 3), activation="relu", padding="same"),
         layers.MaxPooling2D(2, 2),      # Giảm kích thước xuống 1/2
@@ -210,13 +208,73 @@ def xay_dung_mo_hinh(so_class):
 
     # Compile model với optimizer Adam và loss categorical_crossentropy
     model.compile(
-        optimizer=keras.optimizers.Adam(learning_rate=0.001),
+        optimizer=keras.optimizers.Adam(learning_rate=LEARNING_RATE),
         loss="categorical_crossentropy",
         metrics=["accuracy"]
     )
 
     return model
 
+
+def get_model(so_class):
+    """
+    Lấy mô hình để huấn luyện. Nếu đã có mô hình cũ, sẽ load lên.
+    Nếu số lượng class thay đổi, tự động thay thế layer cuối để Fine-tuning.
+    """
+    if MODEL_PATH.exists():
+        print("🔄 Đã tìm thấy mô hình cũ. Đang kiểm tra để học tiếp...")
+        try:
+            base_model = keras.models.load_model(str(MODEL_PATH))
+            old_so_class = base_model.layers[-1].units
+            
+            if old_so_class != so_class:
+                print(f"⚠️ Phát hiện số lượng quả thay đổi (từ {old_so_class} lên {so_class}).")
+                print("   Tiến hành cập nhật cấu trúc mô hình (Fine-tuning)...")
+                
+                # Gỡ bỏ layer Dense cuối cùng
+                base_model.pop()
+                
+                # Thêm layer mới với số lượng class mới
+                base_model.add(layers.Dense(so_class, activation="softmax", name=f"new_output_{so_class}"))
+                
+                # Compile lại với Learning Rate nhỏ hơn để tránh hỏng trọng số cũ
+                base_model.compile(
+                    optimizer=keras.optimizers.Adam(learning_rate=FINE_TUNE_LR),
+                    loss="categorical_crossentropy",
+                    metrics=["accuracy"]
+                )
+                return base_model
+            else:
+                print("✅ Số lượng class không đổi. Sẽ tiếp tục huấn luyện mô hình hiện tại.")
+                return base_model
+        except Exception as e:
+            print(f"❌ Lỗi khi load mô hình cũ: {e}. Sẽ tạo mô hình mới từ đầu.")
+            
+    print("🏗️  Đang xây dựng mô hình CNN mới từ đầu...")
+    return xay_dung_mo_hinh(so_class)
+
+
+class FruitTrainingLogger(keras.callbacks.Callback):
+    """
+    Custom Callback để in danh sách loại quả và thông báo epoch.
+    """
+    def __init__(self, class_indices, class_counts):
+        super().__init__()
+        self.index_to_class = {v: k for k, v in class_indices.items()}
+        self.class_counts = class_counts
+
+    def on_train_begin(self, logs=None):
+        print("\n" + "=" * 60)
+        print("   🌟 DANH SÁCH CÁC LOẠI QUẢ CHUẨN BỊ HỌC 🌟")
+        print("=" * 60)
+        for i in range(len(self.index_to_class)):
+            cls_name = self.index_to_class[i]
+            count = self.class_counts[i]
+            print(f"   🍏 {cls_name.capitalize():20s} : {count} ảnh train")
+        print("=" * 60 + "\n")
+
+    def on_epoch_begin(self, epoch, logs=None):
+        print(f"\n▶ Bắt đầu Epoch {epoch + 1}/{self.params['epochs']}...")
 
 def ve_bieu_do(history, save_path=None):
     """
@@ -288,6 +346,67 @@ def luu_danh_sach_class(class_indices):
     print(f"   Classes: {class_names}")
 
 
+def export_training_summary(history, class_indices, so_mau_train, so_mau_val):
+    """
+    Xuất báo cáo tóm tắt quá trình huấn luyện ra file JSON.
+    """
+    index_to_class = {v: k for k, v in class_indices.items()}
+    class_names = [index_to_class[i] for i in range(len(index_to_class))]
+    
+    epochs_run = len(history.history["accuracy"])
+    
+    val_acc = float(history.history["val_accuracy"][-1])
+    acc = float(history.history["accuracy"][-1])
+    val_loss = float(history.history["val_loss"][-1])
+    loss = float(history.history["loss"][-1])
+    
+    summary_path = MODEL_DIR / "training_summary.json"
+    
+    training_iterations = 1
+    if summary_path.exists():
+        try:
+            with open(summary_path, "r", encoding="utf-8") as f:
+                old_summary = json.load(f)
+                if "training_iterations" in old_summary:
+                    training_iterations = old_summary["training_iterations"] + 1
+        except Exception:
+            pass
+
+    summary = {
+        "project_name": "AI Nhận Diện Trái Cây",
+        "trained_at": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "training_iterations": training_iterations,
+        "classes_learned": class_names,
+        "total_classes": len(class_names),
+        "dataset_info": {
+            "train_samples": so_mau_train,
+            "validation_samples": so_mau_val,
+            "input_shape": [IMG_SIZE, IMG_SIZE, 3]
+        },
+        "hyperparameters": {
+            "epochs_run": epochs_run,
+            "batch_size": BATCH_SIZE,
+            "optimizer": "Adam",
+            "learning_rate": LEARNING_RATE
+        },
+        "final_metrics": {
+            "accuracy": round(acc, 4),
+            "val_accuracy": round(val_acc, 4),
+            "loss": round(loss, 4),
+            "val_loss": round(val_loss, 4)
+        },
+        "model_path": "models/fruit_model.keras"
+    }
+
+    
+    summary_path = MODEL_DIR / "training_summary.json"
+    with open(summary_path, "w", encoding="utf-8") as f:
+        json.dump(summary, f, ensure_ascii=False, indent=4)
+        
+    print(f"📄 Đã lưu báo cáo huấn luyện: {summary_path}")
+
+
+
 def main():
     print("=" * 60)
     print("   🍎 AI NHẬN DIỆN TRÁI CÂY - HUẤN LUYỆN MÔ HÌNH")
@@ -321,14 +440,18 @@ def main():
     # ---- Bước 3: Lưu danh sách class ----
     luu_danh_sach_class(train_gen.class_indices)
 
-    # ---- Bước 4: Xây dựng mô hình ----
-    print("\n🏗️  Đang xây dựng mô hình CNN...")
-    model = xay_dung_mo_hinh(so_class)
+    # ---- Bước 4: Xây dựng hoặc load mô hình ----
+    model = get_model(so_class)
     model.summary()
     print()
 
     # ---- Bước 5: Chuẩn bị callbacks ----
+    # Đếm số lượng ảnh train mỗi class cho Logger
+    import collections
+    class_counts = collections.Counter(train_gen.classes)
+    
     callbacks = [
+        FruitTrainingLogger(train_gen.class_indices, class_counts),
         # Dừng sớm nếu validation loss không cải thiện sau 7 epoch
         EarlyStopping(
             monitor="val_loss",
@@ -352,6 +475,9 @@ def main():
             verbose=1
         )
     ]
+    
+    # Nạp thêm callback từ GUI nếu được gọi từ gui_dashboard.py
+    callbacks.extend(GUI_CALLBACKS)
 
     # ---- Bước 6: Huấn luyện mô hình ----
     print("🚀 Bắt đầu huấn luyện...\n")
@@ -360,7 +486,7 @@ def main():
         epochs=EPOCHS,
         validation_data=val_gen,
         callbacks=callbacks,
-        verbose=1
+        verbose=2
     )
 
     # ---- Bước 7: Hiển thị kết quả cuối cùng ----
@@ -378,6 +504,9 @@ def main():
     # ---- Bước 8: Vẽ biểu đồ ----
     bieu_do_path = MODEL_DIR / "training_history.png"
     ve_bieu_do(history, save_path=bieu_do_path)
+
+    # ---- Bước 9: Xuất file báo cáo JSON ----
+    export_training_summary(history, train_gen.class_indices, so_mau_train, so_mau_val)
 
     print("\n🎉 Hoàn thành! Bạn có thể chạy app.py để nhận diện trái cây.")
 

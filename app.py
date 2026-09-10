@@ -17,7 +17,7 @@ from pathlib import Path
 # ============================================================
 try:
     import tkinter as tk
-    from tkinter import ttk, filedialog, messagebox
+    from tkinter import ttk, filedialog, messagebox, simpledialog
 except ImportError:
     print("❌ Tkinter không khả dụng. Hãy cài Python đầy đủ.")
     exit(1)
@@ -38,6 +38,7 @@ except ImportError:
 BASE_DIR   = Path(__file__).resolve().parent
 MODEL_PATH = BASE_DIR / "models" / "fruit_model.keras"
 CLASS_FILE = BASE_DIR / "models" / "class_names.json"
+SUMMARY_FILE = BASE_DIR / "models" / "training_summary.json"
 
 IMG_SIZE             = 128   # Phải bằng IMG_SIZE trong train.py
 CONFIDENCE_THRESHOLD = 0.60  # Ngưỡng tin cậy tối thiểu
@@ -169,6 +170,22 @@ class FruitRecognitionApp:
             fg=COLORS["text_gray"],
             bg=COLORS["bg_dark"]
         ).pack()
+
+        # Hiện thông tin file summary nếu có
+        if SUMMARY_FILE.exists():
+            try:
+                with open(SUMMARY_FILE, "r", encoding="utf-8") as f:
+                    summary = json.load(f)
+                info_text = f"Model trained: {summary['trained_at'][:10]} | Acc: {summary['final_metrics']['val_accuracy']*100:.1f}% | Classes: {summary['total_classes']}"
+                tk.Label(
+                    frame_title,
+                    text=info_text,
+                    font=("Segoe UI", 9, "italic"),
+                    fg=COLORS["success"],
+                    bg=COLORS["bg_dark"]
+                ).pack(pady=(5, 0))
+            except Exception:
+                pass
 
         # ===== THANH TRẠNG THÁI MODEL =====
         self.frame_status = tk.Frame(self.root, bg=COLORS["bg_panel"], pady=8)
@@ -426,10 +443,28 @@ class FruitRecognitionApp:
             command=self._xoa_ket_qua
         )
         btn_xoa.pack(side="left", padx=10)
+        
+        # Nút Thêm quả mới
+        btn_them_qua = tk.Button(
+            frame_nut,
+            text="➕ Thêm Loại Quả",
+            font=("Segoe UI", 12, "bold"),
+            bg=COLORS["success"],
+            fg=COLORS["text_white"],
+            activebackground="#27ae60",
+            activeforeground=COLORS["text_white"],
+            relief="flat",
+            padx=20,
+            pady=10,
+            cursor="hand2",
+            command=self._them_loai_qua
+        )
+        btn_them_qua.pack(side="right", padx=10)
 
         # Thêm hiệu ứng hover cho nút
         self._them_hover(self.btn_chon_anh, COLORS["bg_card"], COLORS["accent"])
         self._them_hover(btn_xoa, COLORS["bg_panel"], COLORS["bg_card"])
+        self._them_hover(btn_them_qua, COLORS["success"], "#27ae60")
 
     def _them_hover(self, btn, color_normal, color_hover):
         """Thêm hiệu ứng đổi màu khi hover chuột lên nút"""
@@ -655,6 +690,40 @@ class FruitRecognitionApp:
                 text="📁\n\nChưa có ảnh\n\nBấm 'Chọn Ảnh' để bắt đầu"
             )
             self.lbl_ten_file.configure(text="")
+            
+    def _them_loai_qua(self):
+        """Mở hộp thoại tạo thư mục cho quả mới"""
+        class_name = simpledialog.askstring(
+            "Thêm Loại Quả Mới", 
+            "Nhập tên loại quả muốn thêm bằng tiếng Anh (ví dụ: strawberry, watermelon):",
+            parent=self.root
+        )
+        
+        if class_name:
+            class_name = class_name.strip().lower()
+            if not class_name:
+                messagebox.showerror("Lỗi", "Tên loại quả không hợp lệ!")
+                return
+                
+            train_dir = BASE_DIR / "dataset" / "train" / class_name
+            val_dir = BASE_DIR / "dataset" / "validation" / class_name
+            
+            if train_dir.exists() or val_dir.exists():
+                messagebox.showwarning("Cảnh báo", f"Loại quả '{class_name}' đã tồn tại trong dataset!")
+                return
+                
+            try:
+                train_dir.mkdir(parents=True, exist_ok=True)
+                val_dir.mkdir(parents=True, exist_ok=True)
+                
+                msg = (f"Đã tạo thư mục thành công!\n\n"
+                       f"Bạn hãy làm theo các bước sau:\n"
+                       f"1. Copy 80% số ảnh vào: dataset/train/{class_name}\n"
+                       f"2. Copy 20% số ảnh vào: dataset/validation/{class_name}\n"
+                       f"3. Đóng ứng dụng này và chạy lại file 'train.py' để AI học thêm quả mới.")
+                messagebox.showinfo(f"Thành công tạo '{class_name}'", msg)
+            except Exception as e:
+                messagebox.showerror("Lỗi", f"Không thể tạo thư mục:\n{e}")
 
 
 def main():
